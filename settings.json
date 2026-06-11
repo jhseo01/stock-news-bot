@@ -6,9 +6,17 @@
   "LG전자": "LG전자",
   "SK하이닉스": "SK하이닉스"
  },
- "briefing_hour": 7,
+ "briefing_hour": 6,
  "briefing_limit": 5,
- "breaking_keywords": ["속보", "단독", "특징주", "공시", "급등", "급락", "어닝"],
+ "breaking_keywords": [
+  "속보",
+  "단독",
+  "특징주",
+  "공시",
+  "급등",
+  "급락",
+  "어닝"
+ ],
  "breaking_window_hours": 2,
  "breaking_period_minutes": 10,
  "paused": false,
