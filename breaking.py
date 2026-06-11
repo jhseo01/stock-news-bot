@@ -1,4 +1,4 @@
-"""주기적으로 실행되어 새 속보 기사를 텔레그램으로 전송한다.
+"""새 속보 기사를 찾아 텔레그램으로 전송한다.
 
 - 이미 보낸 기사는 state/seen.json에 기록해 중복 전송을 막는다.
 - state 파일이 없는 최초 실행 시에는 과거 기사를 전부 쏟아내지 않도록
@@ -10,9 +10,9 @@ import json
 import time
 from pathlib import Path
 
-from config import BREAKING_KEYWORDS, BREAKING_WINDOW_HOURS, STOCKS
 from news import fetch_news
 from notify import send_message
+from settings import load_settings
 
 STATE_FILE = Path(__file__).parent / "state" / "seen.json"
 STATE_TTL = 7 * 24 * 3600  # 7일 지난 기록은 정리
@@ -23,19 +23,19 @@ def article_key(item: dict) -> str:
     return hashlib.sha1(item["title"].encode("utf-8")).hexdigest()
 
 
-def is_breaking(title: str) -> bool:
-    if not BREAKING_KEYWORDS:
+def is_breaking(title: str, keywords: list[str]) -> bool:
+    if not keywords:
         return True
-    return any(kw in title for kw in BREAKING_KEYWORDS)
+    return any(kw in title for kw in keywords)
 
 
-def load_state() -> tuple[dict, bool]:
+def load_seen() -> tuple[dict, bool]:
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text(encoding="utf-8")), False
     return {}, True
 
 
-def save_state(seen: dict) -> None:
+def save_seen(seen: dict) -> None:
     now = time.time()
     seen = {k: v for k, v in seen.items() if now - v < STATE_TTL}
     STATE_FILE.parent.mkdir(exist_ok=True)
@@ -43,13 +43,14 @@ def save_state(seen: dict) -> None:
 
 
 def main() -> None:
-    seen, first_run = load_state()
+    s = load_settings()
+    seen, first_run = load_seen()
     now = time.time()
     sent = 0
 
-    for name, query in STOCKS.items():
+    for name, query in s["stocks"].items():
         try:
-            items = fetch_news(query, when=f"{BREAKING_WINDOW_HOURS}h", limit=20)
+            items = fetch_news(query, when=f"{s['breaking_window_hours']}h", limit=20)
         except Exception as e:
             print(f"{name}: 뉴스 조회 실패 - {e}")
             continue
@@ -60,7 +61,7 @@ def main() -> None:
                 continue
             seen[key] = now
 
-            if first_run or not is_breaking(item["title"]):
+            if first_run or not is_breaking(item["title"], s["breaking_keywords"]):
                 continue
 
             title = html.escape(item["title"])
@@ -72,7 +73,7 @@ def main() -> None:
             )
             sent += 1
 
-    save_state(seen)
+    save_seen(seen)
     if first_run:
         print("최초 실행: 기존 기사를 기록만 하고 전송하지 않았습니다.")
     print(f"속보 {sent}건 전송 완료")

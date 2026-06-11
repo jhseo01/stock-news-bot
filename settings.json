@@ -1,0 +1,22 @@
+{
+ "stocks": {
+  "삼성전자": "삼성전자",
+  "현대차": "현대차 OR 현대자동차",
+  "네이버": "네이버 주가 OR NAVER 실적 OR 네이버 주식",
+  "LG전자": "LG전자",
+  "SK하이닉스": "SK하이닉스"
+ },
+ "briefing_hour": 7,
+ "briefing_limit": 5,
+ "breaking_keywords": ["속보", "단독", "특징주", "공시", "급등", "급락", "어닝"],
+ "breaking_window_hours": 2,
+ "breaking_period_minutes": 10,
+ "paused": false,
+ "codes": {
+  "삼성전자": "005930",
+  "현대차": "005380",
+  "네이버": "035420",
+  "LG전자": "066570",
+  "SK하이닉스": "000660"
+ }
+}
