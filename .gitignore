@@ -5,6 +5,10 @@ __pycache__/
 # 토큰이 담긴 1회용 설정 파일 (절대 커밋 금지)
 .gh_token
 _setup_secrets.py
+worker/.dev.vars
+worker/node_modules/
+worker/.wrangler/
+.webhook_secret
 
 # 봇과 무관한 로컬 작업 파일
 demo_langgraph.py

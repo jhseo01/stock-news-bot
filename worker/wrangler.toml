@@ -1,0 +1,12 @@
+name = "stock-news-bot"
+main = "src/index.js"
+compatibility_date = "2026-06-01"
+
+# 10분마다 실행 (Cloudflare 크론은 무료 플랜에서도 정시에 정확히 실행됨)
+[triggers]
+crons = ["*/10 * * * *"]
+
+# 상태 저장소 (배포 전에 `npx wrangler kv namespace create KV`로 생성 후 id 입력)
+[[kv_namespaces]]
+binding = "KV"
+id = "17c7d53d2f7844b4b8487dbccfcb1dfc"
