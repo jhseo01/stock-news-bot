@@ -14,8 +14,8 @@ const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const DEFAULT_SETTINGS = {
   stocks: {
     "삼성전자": "삼성전자",
-    "현대차": "현대차 OR 현대자동차",
-    "네이버": "네이버 OR NAVER",
+    "현대차": "현대차",
+    "네이버": "네이버",
     "LG전자": "LG전자",
     "SK하이닉스": "SK하이닉스",
   },
@@ -37,11 +37,11 @@ const DEFAULT_SETTINGS = {
 const HELP = `🤖 <b>사용 가능한 명령어</b>
 
 /list — 현재 설정 보기
+/news — 등록 종목 최신 뉴스 (지금 바로)
+/news 종목명 — 특정 종목 최신 뉴스 (예: /news 카카오)
 /price — 등록 종목 현재가 조회
 /price 종목명 — 특정 종목 현재가 (예: /price 카카오)
 /add 종목명 — 종목 추가 (예: /add 카카오)
-/add 종목명 검색어 — 검색어 직접 지정
-   (예: /add 카카오 카카오 OR 카카오페이)
 /del 종목명 — 종목 삭제
 /time 시간 — 브리핑 시간 변경, 24시 기준 (예: /time 8)
 /period 분 — 속보 체크 주기 변경, 최소 ${MIN_PERIOD}분
@@ -78,6 +78,12 @@ export default {
         const s = await loadSettings(env);
         await sendMessage(env, await buildBriefing(s));
         return new Response("briefing sent");
+      }
+      if (url.pathname === "/news") {
+        const s = await loadSettings(env);
+        return new Response(await buildNewsReport(s, url.searchParams.get("q")), {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
       }
     }
 
@@ -155,46 +161,54 @@ function splitMessage(text) {
   return chunks;
 }
 
-// ---------- 뉴스 (구글 뉴스 RSS) ----------
+// ---------- 뉴스 (네이버 금융 종목 뉴스, 종목코드 기반) ----------
+//
+// 구글 뉴스 RSS는 ① 데이터센터 IP에서 요청이 몰리면 rate-limit으로 빈 응답을 주고
+// ② 본문 매칭이라 무관한 종목이 섞이는 문제가 있어, 시세와 같은 네이버 서버를 쓴다.
 
-function queryTerms(query) {
-  return query.split(" OR ").map((t) => t.trim()).filter(Boolean);
-}
-
-async function fetchNews(query, when, limit) {
-  const url =
-    "https://news.google.com/rss/search?q=" +
-    encodeURIComponent(`${query} when:${when}`) +
-    "&hl=ko&gl=KR&ceid=KR:ko";
-  const xml = await (await fetch(url)).text();
-  const terms = queryTerms(query).map((t) => t.toLowerCase());
+async function fetchStockNews(code, limit) {
+  const r = await fetch(
+    `https://api.stock.naver.com/news/stock/${code}?pageSize=${Math.max(limit, 10)}&page=1`,
+    { headers: NAVER_HEADERS },
+  );
+  if (!r.ok) throw new Error(`news ${r.status}`);
+  const groups = await r.json();
 
   const items = [];
-  const itemRe = /<item>([\s\S]*?)<\/item>/g;
-  let m;
-  while ((m = itemRe.exec(xml)) && items.length < limit) {
-    const block = m[1];
-    const pick = (re) => {
-      const mm = block.match(re);
-      return mm ? decodeEntities(mm[1].trim()) : "";
-    };
-    let title = pick(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/);
-    let source = pick(/<source[^>]*>([\s\S]*?)<\/source>/);
-    const link = pick(/<link>([\s\S]*?)<\/link>/);
-
-    // 구글 뉴스 제목은 "기사제목 - 언론사" 형식
-    const idx = title.lastIndexOf(" - ");
-    if (idx > 0) {
-      if (!source) source = title.slice(idx + 3).trim();
-      title = title.slice(0, idx).trim();
-    }
-
-    // 본문 매칭으로 섞여 들어온 무관한 종목 기사 제거: 제목에 종목명이 있어야 함
-    if (terms.length && !terms.some((t) => title.toLowerCase().includes(t))) continue;
-
-    items.push({ title, source, link });
+  for (const g of groups) {
+    const it = (g.items || [])[0]; // 묶음의 대표 기사 1건
+    if (!it) continue;
+    items.push({
+      id: it.id,
+      title: decodeEntities((it.titleFull || it.title || "").trim()),
+      source: it.officeName || "",
+      link:
+        it.mobileNewsUrl ||
+        `https://n.news.naver.com/mnews/article/${it.officeId}/${it.articleId}`,
+      datetime: it.datetime || "", // "YYYYMMDDHHMM" (KST)
+    });
+    if (items.length >= limit) break;
   }
   return items;
+}
+
+// 등록 종목의 종목코드를 얻는다. 없으면 조회해서 settings에 캐시한다.
+async function resolveCode(s, name) {
+  s.codes = s.codes || {};
+  if (s.codes[name]) return s.codes[name];
+  const code = await lookupCode(name).catch(() => null);
+  if (code) s.codes[name] = code;
+  return code;
+}
+
+// KST 기준 "YYYYMMDDHHMM" 문자열 (네이버 datetime과 비교용)
+function kstStamp(date) {
+  const k = new Date(date.getTime() + 9 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${k.getUTCFullYear()}${p(k.getUTCMonth() + 1)}${p(k.getUTCDate())}` +
+    `${p(k.getUTCHours())}${p(k.getUTCMinutes())}`
+  );
 }
 
 // ---------- 시세 (네이버 금융 공개 데이터) ----------
@@ -294,9 +308,8 @@ function formatSettings(s) {
     "",
     "📈 종목:",
   ];
-  for (const [name, query] of Object.entries(s.stocks)) {
-    const extra = query !== name ? ` (검색어: ${esc(query)})` : "";
-    lines.push(` • ${esc(name)}${extra}`);
+  for (const name of Object.keys(s.stocks)) {
+    lines.push(` • ${esc(name)}`);
   }
   lines.push("", `🚨 속보 키워드: ${esc(s.breaking_keywords.join(", "))}`);
   return lines.join("\n");
@@ -311,12 +324,23 @@ async function handleCommand(text, s) {
 
   if (cmd === "/list") return { reply: formatSettings(s), changed: false };
 
+  if (cmd === "/news") {
+    const reply = await buildNewsReport(s, args[0] || null);
+    return { reply, changed: false };
+  }
+
   if (cmd === "/price") return buildPriceReport(s, args[0] || null);
 
   if (cmd === "/add") {
     if (!args.length) return { reply: "사용법: /add 종목명 (예: /add 카카오)", changed: false };
     const name = args[0];
-    s.stocks[name] = args.length > 1 ? args.slice(1).join(" ") : name;
+    const code = await lookupCode(name).catch(() => null);
+    if (!code) {
+      return { reply: `❌ '${esc(name)}' 종목을 찾지 못했습니다. 정확한 종목명을 입력해주세요.`, changed: false };
+    }
+    s.stocks[name] = name;
+    s.codes = s.codes || {};
+    s.codes[name] = code;
     return {
       reply: `✅ <b>${esc(name)}</b> 추가 완료 (총 ${Object.keys(s.stocks).length}종목)`,
       changed: true,
@@ -415,6 +439,46 @@ async function handleUpdate(update, env) {
   if (reply) await sendMessage(env, reply);
 }
 
+// ---------- 뉴스 (브리핑 / 온디맨드) ----------
+
+// 종목코드로 뉴스 줄 목록을 만든다.
+async function newsLinesForCode(code, limit) {
+  let items;
+  try {
+    items = await fetchStockNews(code, limit);
+  } catch (e) {
+    return [`  (뉴스 조회 실패: ${esc(e.message)})`];
+  }
+  if (!items.length) return ["  최근 뉴스 없음"];
+  return items.map((item, i) => {
+    const suffix = item.source ? ` — ${esc(item.source)}` : "";
+    return `${i + 1}. <a href="${item.link}">${esc(item.title)}</a>${suffix}`;
+  });
+}
+
+// /news : 등록 종목(또는 지정 종목)의 최신 뉴스를 즉시 조회
+async function buildNewsReport(s, target) {
+  const stamp = nowKST().toISOString().slice(11, 16);
+
+  if (target) {
+    const code = await resolveCode(s, target);
+    const lines = [`📰 <b>${esc(target)} 최신 뉴스</b> (${stamp} 기준)`, ""];
+    if (!code) lines.push(`  '${esc(target)}' 종목을 찾지 못했습니다.`);
+    else lines.push(...(await newsLinesForCode(code, 5)));
+    return lines.join("\n");
+  }
+
+  const lines = [`📰 <b>최신 뉴스</b> (${stamp} 기준)`, ""];
+  for (const name of Object.keys(s.stocks)) {
+    lines.push(`🏢 <b>${esc(name)}</b>`);
+    const code = await resolveCode(s, name);
+    if (!code) lines.push("  종목코드를 찾지 못함");
+    else lines.push(...(await newsLinesForCode(code, 3)));
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
 // ---------- 브리핑 ----------
 
 async function buildBriefing(s) {
@@ -422,21 +486,11 @@ async function buildBriefing(s) {
   const date = kst.toISOString().slice(0, 10);
   const lines = ["📊 <b>주식 뉴스 브리핑</b>", `${date} (${WEEKDAYS[kst.getUTCDay()]})`, ""];
 
-  for (const [name, query] of Object.entries(s.stocks)) {
+  for (const name of Object.keys(s.stocks)) {
     lines.push(`🏢 <b>${esc(name)}</b>`);
-    let items = [];
-    try {
-      items = await fetchNews(query, "1d", s.briefing_limit);
-    } catch (e) {
-      lines.push(`  (뉴스 조회 실패: ${esc(e.message)})`);
-    }
-    if (!items.length && !lines[lines.length - 1].includes("조회 실패")) {
-      lines.push("  최근 24시간 내 주요 뉴스 없음");
-    }
-    items.forEach((item, i) => {
-      const suffix = item.source ? ` — ${esc(item.source)}` : "";
-      lines.push(`${i + 1}. <a href="${item.link}">${esc(item.title)}</a>${suffix}`);
-    });
+    const code = await resolveCode(s, name);
+    if (!code) lines.push("  종목코드를 찾지 못함");
+    else lines.push(...(await newsLinesForCode(code, s.briefing_limit)));
     lines.push("");
   }
   return lines.join("\n").trim();
@@ -449,19 +503,23 @@ async function checkBreaking(env, s) {
   const firstRun = seen === null;
   seen = seen || {};
   const now = Date.now();
+  const cutoff = kstStamp(new Date(now - s.breaking_window_hours * 3600 * 1000));
 
-  for (const [name, query] of Object.entries(s.stocks)) {
+  for (const name of Object.keys(s.stocks)) {
+    const code = await resolveCode(s, name);
+    if (!code) continue;
     let items;
     try {
-      items = await fetchNews(query, `${s.breaking_window_hours}h`, 20);
+      items = await fetchStockNews(code, 20);
     } catch (e) {
       console.error(`${name} 뉴스 조회 실패:`, e);
       continue;
     }
     for (const item of items) {
-      if (item.title in seen) continue;
-      seen[item.title] = now;
+      if (item.id in seen) continue;
+      seen[item.id] = now;
       if (firstRun) continue; // 최초 실행은 기록만 (과거 기사 폭주 방지)
+      if (item.datetime && item.datetime < cutoff) continue; // 설정 시간창 밖
       if (s.breaking_keywords.length && !s.breaking_keywords.some((k) => item.title.includes(k))) {
         continue;
       }
